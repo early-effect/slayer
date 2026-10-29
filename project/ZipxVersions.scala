@@ -6,7 +6,7 @@ object MyVersions extends ZipxVersions:
   val sbt: SbtVersion     = SbtVersion("2.1.0-RC1")
   val scala: ScalaVersion = ScalaVersion("3.9.0")
 
-  val slayer = Ship("core", "0.2.0")
+  val slayer = Ship("core", "0.2.1")
 
   val zio        = Lib("dev.zio", "zio", "2.1.27")
   val zioTest    = zio.mod("zio-test").test
