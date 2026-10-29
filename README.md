@@ -2,8 +2,8 @@
 
 N-arity, multi-param-list, generics-aware ZIO service stubbing for Scala 3.
 
-[![Scala CI](https://github.com/russwyte/slayer/actions/workflows/scala.yml/badge.svg)](https://github.com/russwyte/slayer/actions/workflows/scala.yml)
-[![Maven Repository](https://img.shields.io/maven-central/v/io.github.russwyte/slayer_3?logo=apachemaven)](https://mvnrepository.com/artifact/io.github.russwyte/slayer)
+[![CI](https://github.com/early-effect/slayer/actions/workflows/ci.yml/badge.svg)](https://github.com/early-effect/slayer/actions/workflows/ci.yml)
+[![Maven Repository](https://img.shields.io/maven-central/v/rocks.earlyeffect/slayer_3?logo=apachemaven)](https://central.sonatype.com/artifact/rocks.earlyeffect/slayer_3)
 
 `slayer` is a small library for **stubbing** service traits in ZIO tests — not a full mock framework. There is no
 verify/times DSL and no argument matchers beyond the `any[A]` type placeholder. Given any service trait (including
@@ -25,10 +25,10 @@ It is inspired by Kit Langton's [stubby](https://github.com/kitlangton/stubby) a
 ## Install
 
 ```scala
-libraryDependencies += "io.github.russwyte" %% "slayer" % "<version>" % Test
+libraryDependencies += "rocks.earlyeffect" %% "slayer" % "<version>" % Test
 ```
 
-ZIO is declared `% "provided"` — bring your own (≥ 2.1.x). slayer requires Scala 3.8.x or later.
+ZIO is `provided`. Bring your own (2.1.x or newer). slayer requires Scala 3.9 or later.
 
 ## Usage
 
