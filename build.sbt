@@ -1,35 +1,39 @@
-val scala3Version = "3.8.3"
-val zioVersion    = "2.1.26"
+MyVersions.settings
 
-ThisBuild / scalaVersion         := scala3Version
-ThisBuild / organization         := "io.github.russwyte"
-ThisBuild / organizationName     := "russwyte"
-ThisBuild / organizationHomepage := Some(url("https://github.com/russwyte"))
-ThisBuild / licenses             := List("Apache-2.0" -> url("http://www.apache.org/licenses/LICENSE-2.0.txt"))
-ThisBuild / homepage             := Some(url("https://github.com/russwyte/slayer"))
-ThisBuild / scmInfo              := Some(
+organization         := "rocks.earlyeffect"
+organizationName     := "Early Effect"
+organizationHomepage := Some(uri("https://www.earlyeffect.rocks"))
+licenses             := List("Apache-2.0" -> uri("http://www.apache.org/licenses/LICENSE-2.0.txt"))
+homepage             := Some(uri("https://github.com/early-effect/slayer"))
+scmInfo              := Some(
   ScmInfo(
-    url("https://github.com/russwyte/slayer"),
-    "scm:git@github.com:russwyte/slayer.git",
+    uri("https://github.com/early-effect/slayer"),
+    "scm:git@github.com:early-effect/slayer.git",
   )
 )
-ThisBuild / developers := List(
+developers := List(
   Developer(
     id = "russwyte",
     name = "Russ White",
     email = "356303+russwyte@users.noreply.github.com",
-    url = url("https://github.com/russwyte"),
+    url = uri("https://github.com/russwyte"),
   )
 )
-ThisBuild / versionScheme := Some("early-semver")
+versionScheme := Some("early-semver")
 
-usePgpKeyHex("2F64727A87F1BCF42FD307DD8582C4F16659A7D6")
+// The release job sets PGP_KEY_HEX. The sentinel keeps a local session loadable.
+usePgpKeyHex(sys.env.getOrElse("PGP_KEY_HEX", "MISSING_KEY_HEX"))
 
-addCommandAlias(
-  "coverageTest",
-  "coverage; clean; core/test; core/coverageReport",
+zipxJavaVersion      := JdkVersion("25")
+zipxWorkflowDispatch := true
+zipxCapabilities ++= Seq(
+  ZipxCentral.snapshots,
+  ZipxCentral.pullRequestSnapshots("snapshots"),
 )
-addCommandAlias("cov", "coverageTest")
+zipxReleaseWorkflow  := Some(ZipxCentral.releases)
+zipxCoverageWorkflow := Some(
+  Coverage.workflow(CoverageTrigger.Dispatch, CoverageTrigger.prLabel("coverage"))
+)
 
 lazy val commonSettings = Seq(
   scalacOptions ++= Seq(
@@ -37,18 +41,21 @@ lazy val commonSettings = Seq(
     "-Wunused:all",
     "-feature",
   ),
-  scalafixDependencies += "com.github.vovapolu" %% "scaluzzi" % "0.1.23",
+  testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
+  scalafixDependencies += MyVersions.moduleID(MyVersions.scaluzzi),
+  coverageFailOnMinimum := true,
+  coverageExcludedFiles := ".*\\bMacros",
 )
 
-lazy val publishSettings = Seq(
-  publishMavenStyle    := true,
-  pomIncludeRepository := { _ => false },
-  publishTo            := {
-    val centralSnapshots = "https://central.sonatype.com/repository/maven-snapshots/"
-    if (isSnapshot.value) Some("central-snapshots" at centralSnapshots)
-    else localStaging.value
-  },
-)
+lazy val core = project
+  .in(file("core"))
+  .settings(commonSettings)
+  .settings(MyVersions.coreLib)
+  .settings(MyVersions.coreTest)
+  .settings(
+    name        := "slayer",
+    description := "N-arity, multi-param-list, generics-aware ZIO service stubbing",
+  )
 
 lazy val root = project
   .in(file("."))
@@ -56,22 +63,4 @@ lazy val root = project
   .settings(
     name           := "slayer-root",
     publish / skip := true,
-  )
-
-lazy val core = project
-  .in(file("core"))
-  .settings(commonSettings)
-  .settings(publishSettings)
-  .settings(
-    name        := "slayer",
-    description := "Slayer — N-arity, multi-param-list, generics-aware ZIO service stubbing",
-    libraryDependencies ++= Seq(
-      "dev.zio"        %% "zio"             % zioVersion    % "provided",
-      "org.scala-lang" %% "scala3-compiler" % scala3Version % "provided",
-      "dev.zio"        %% "zio-test"        % zioVersion    % Test,
-      "dev.zio"        %% "zio-test-sbt"    % zioVersion    % Test,
-    ),
-    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework"),
-    coverageFailOnMinimum := true,
-    coverageExcludedFiles := ".*\\bMacros",
   )
