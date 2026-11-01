@@ -11,7 +11,7 @@ object MyVersions extends ZipxVersions:
   val zio        = Lib("dev.zio", "zio", "2.1.27")
   val zioTest    = zio.mod("zio-test").test
   val zioTestSbt = zio.mod("zio-test-sbt").test
-  val compiler   = Lib("org.scala-lang", "scala3-compiler", "3.9.0")
+  val compiler   = Lib("org.scala-lang", "scala3-compiler", "3.10.0")
   val scaluzzi   = Lib("com.github.vovapolu", "scaluzzi", "0.1.23")
 
   val scalafmt  = Plugin("org.scalameta", "sbt-scalafmt", "2.6.2")
