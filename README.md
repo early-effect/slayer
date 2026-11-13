@@ -14,8 +14,9 @@ from the test body. For structured call history, use `stubbedTraced` (or a `Ref`
 
 It is inspired by Kit Langton's [stubby](https://github.com/kitlangton/stubby) and addresses four of its limitations:
 
-1. **No arity ceiling** — stubby hardcoded `F1..F9`. slayer unrolls the user's handler into an `Array[Any] => Any`
-   adapter, so any number of parameters works.
+1. **No arity ceiling on a curried handler.** stubby hardcoded `F1..F9`. slayer unrolls a curried handler of any
+   length into an `Array[Any] => Any` adapter. A tupled handler stops at 22 parameters, because Scala has no
+   `Function23`.
 2. **Multi-parameter-list (curried) methods** are first-class for both selectors and handlers.
 3. **Generic / type-parameterized methods** (`def get[A: Tag](id: Id): UIO[A]`) are supported. Dispatch is by name and
    erased value-parameter signature.
@@ -26,9 +27,10 @@ It is inspired by Kit Langton's [stubby](https://github.com/kitlangton/stubby) a
 
 ```scala
 libraryDependencies += "rocks.earlyeffect" %% "slayer" % "<version>" % Test
+libraryDependencies += "rocks.earlyeffect" %%% "slayer" % "<version>" % Test // Scala Native
 ```
 
-ZIO is `provided`. Bring your own (2.1.x or newer). slayer requires Scala 3.9 or later.
+ZIO is `provided`. Bring your own (2.1.x or newer). slayer publishes for the JVM and for Scala Native, and requires Scala 3.10 or later.
 
 ## Usage
 
@@ -56,7 +58,7 @@ object MySpec extends ZIOSpecDefault:
       val program =
         for
           ref <- Ref.make(Map.empty[Int, String])
-          _   <- stub[Repo](_.upsert(any[Int], any[String])) { (id: Int, v: String) =>
+          _   <- stub[Repo](_.upsert(any[Int], any[String])) { (id, v) =>
                    ref.update(_ + (id -> v))
                  }
           _   <- ZIO.serviceWithZIO[Repo](_.upsert(1, "a"))
@@ -70,22 +72,23 @@ object MySpec extends ZIOSpecDefault:
 
 ### Curried (multi-parameter-list) methods
 
-slayer reads the *handler*'s function shape, not the method's. A curried 3-list method can be stubbed with either a
-curried handler or a tupled one:
+The handler is typed as the method's value parameters, tupled or curried, so the lambda needs no ascriptions. A
+curried 3-list method can be stubbed with either a curried handler or a tupled one. A tupled handler stops at 22
+parameters because Scala has no `Function23`. A curried handler does not: slayer unrolls any length into the same
+`Array[Any]` adapter.
 
 ```scala
 trait AuditLog:
   def record(orderId: OrderId)(actor: String)(event: String): UIO[Unit]
 
-// Curried handler — mirrors the method shape:
-stub[AuditLog](_.record(any[OrderId])(any[String])(any[String])) {
-  (id: OrderId) => (actor: String) => (event: String) =>
-    log.update((id, actor, event) :: _)
+// Curried handler, the method's shape. The parameter types come from the builder.
+stub[AuditLog](_.record(any[OrderId])(any[String])(any[String])) { id => actor => event =>
+  log.update((id, actor, event) :: _)
 }
 
-// Tupled handler — flat arg list, same method:
-stub[AuditLog](_.record(any[OrderId])(any[String])(any[String])) {
-  (id: OrderId, actor: String, event: String) => ZIO.unit
+// Tupled handler, a flat argument list, same method.
+stub[AuditLog](_.record(any[OrderId])(any[String])(any[String])) { (id, actor, event) =>
+  ZIO.unit
 }
 ```
 
@@ -139,8 +142,9 @@ skip leading defaults (e.g. `_.h(c = any[Int])` against `def h(a: Int = 1, b: In
 See [`DefaultArgSpec`](core/src/test/scala/slayer/DefaultArgSpec.scala) for the full coverage matrix including curried
 methods with defaults across multiple parameter lists.
 
-`stub[S](selector)(result)` — selector is a lambda picking a method; `result` is either a value of the method's return
-type, or a function whose flat parameters match the method's flat value parameters.
+`stub[S](selector)(result)`: the selector lambda picks a method. `result` is a value of that method's return type, or a
+function of its value parameters, tupled or curried. The builder expects those types, so the handler lambda needs no
+ascriptions.
 
 `stubbed[S]` — a `ZLayer` that synthesizes a class implementing `S` (including members inherited from parent
 traits/classes) and exposes its `Stubbed[S]` store. Provide it once per service per test.
@@ -176,8 +180,8 @@ Recording happens at **invoke** time (args always available). Optional console d
 - peels the selector lambda to find the resolved method symbol (overloads have already been chosen by the typer);
 - derives a `MethodId(jvmName, erasedParams)` from that symbol — `jvmName` honors `@targetName`, `erasedParams` keys
   plain overloads;
-- type-checks the result against the method's return; if it's a function, walks the handler's `Function*` chain and
-  emits an `Array[Any] => Any` adapter that casts each slot to the right type.
+- returns a builder whose `apply` expects the method's return value, or a function of its value parameters. A function
+  handler is checked by the typer, then unrolled into an `Array[Any] => Any` adapter.
 
 `stubbed[S]` is a macro that synthesizes a class extending `S & Stubbed[S]`. It overrides every non-private method of
 `S` declared **or inherited** (via Quotes `methodMembers`, excluding `Object`/`Any`/`Matchable` platform members).

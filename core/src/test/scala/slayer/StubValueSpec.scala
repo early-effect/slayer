@@ -84,7 +84,7 @@ object StubValueSpec extends ZIOSpecDefault:
     },
     test("compile error: result type doesn't match method return") {
       for r <- typeCheck("slayer.stub[slayer.StubValueSpec.Repo](_.now)(\"nope\")")
-      yield assertTrue(r.left.exists(_.contains("does not match")))
+      yield assertTrue(r.left.exists(m => m.contains("Long") && m.contains("String")))
     },
     test("compile error: selector doesn't reference a method") {
       for r <- typeCheck("slayer.stub[slayer.StubValueSpec.Repo](_ => 42)(99L)")
