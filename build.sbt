@@ -1,3 +1,35 @@
+import scala.scalanative.sbtplugin.ScalaNativePlugin.autoImport.*
+
+// ZIO's run loop overflows Native's default 1 MB thread stack on macOS. 8 MB matches the Linux default.
+lazy val nativeThreads: Seq[sbt.Setting[?]] = Seq(
+  nativeConfig ~= (_.withMultithreading(true)),
+  Test / envVars += "SCALANATIVE_THREAD_STACK_SIZE" -> "8m",
+)
+
+val scala3Version: String = MyVersions.scala
+
+lazy val nativeCiSetup: Steps = Steps.built("slayer-native-ci")(
+  Step
+    .run(
+      Script(
+        ShExec("sudo", Word.lit("apt-get"), Word.lit("update")) &&
+          ShExec.of(
+            "sudo",
+            List(
+              Word.lit("apt-get"),
+              Word.lit("install"),
+              Word.lit("-y"),
+              Word.lit("clang"),
+              Word.lit("libstdc++-12-dev"),
+              Word.lit("libgc-dev"),
+              Word.lit("libunwind-dev"),
+            ),
+          )
+      )
+    )
+    .named("Install Scala Native build dependencies")
+)
+
 MyVersions.settings
 
 organization         := "rocks.earlyeffect"
@@ -27,6 +59,7 @@ usePgpKeyHex(sys.env.getOrElse("PGP_KEY_HEX", "MISSING_KEY_HEX"))
 zipxJavaVersion      := JdkVersion("25")
 zipxWorkflowDispatch := true
 zipxCapabilities ++= Seq(
+  Capability.testAffected(onPush = false).plusExtraSteps(nativeCiSetup),
   ZipxCentral.snapshots,
   ZipxCentral.pullRequestSnapshots("snapshots"),
 )
@@ -47,8 +80,7 @@ lazy val commonSettings = Seq(
   coverageExcludedFiles := ".*\\bMacros",
 )
 
-lazy val core = project
-  .in(file("core"))
+lazy val core = (projectMatrix in file("core"))
   .settings(commonSettings)
   .settings(MyVersions.coreLib)
   .settings(MyVersions.coreTest)
@@ -56,10 +88,12 @@ lazy val core = project
     name        := "slayer",
     description := "N-arity, multi-param-list, generics-aware ZIO service stubbing",
   )
+  .jvmPlatform(scalaVersions = Seq(scala3Version))
+  .nativePlatform(scalaVersions = Seq(scala3Version), nativeThreads)
 
 lazy val root = project
   .in(file("."))
-  .aggregate(core)
+  .aggregate(core.projectRefs *)
   .settings(
     name           := "slayer-root",
     publish / skip := true,

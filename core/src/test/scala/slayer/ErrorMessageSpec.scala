@@ -3,11 +3,10 @@ package slayer
 import zio.*
 import zio.test.*
 
-/** M7 unit tests: pin compile-time error messages produced by `stub` and `stubbed`.
+/** Compile-time failures of `stub` and `stubbed`.
   *
-  * Each test uses zio-test's `typeCheck` to compile a snippet and asserts the error message contains the substrings we
-  * promise users. We match on substrings (not exact strings) so cosmetic tweaks don't break the contract — but each
-  * substring is something a user would search for when diagnosing the failure.
+  * A bad handler is a typer error on the builder's `apply`: the message names the method's function type and the type
+  * that was passed. A bad selector is still the macro's own message.
   */
 object ErrorMessageSpec extends ZIOSpecDefault:
 
@@ -26,9 +25,9 @@ object ErrorMessageSpec extends ZIOSpecDefault:
         val msg = res.swap.getOrElse("")
         assertTrue(
           res.isLeft,
-          msg.contains("find"),
           msg.contains("String"),
           msg.contains("Int"),
+          msg.contains("match arguments"),
         )
     },
     test("selector isn't a method — message identifies the problem") {
@@ -44,7 +43,7 @@ object ErrorMessageSpec extends ZIOSpecDefault:
           msg.contains("method"),
         )
     },
-    test("handler arity doesn't match method arity — names both arities") {
+    test("handler arity doesn't match — names the method's function and the handler") {
       for res <- typeCheck("""
         import slayer.*
         stub[ErrorMessageSpec.Svc](_.merge(any[Int], any[Int]))((a: Int) => "x")
@@ -53,8 +52,8 @@ object ErrorMessageSpec extends ZIOSpecDefault:
         val msg = res.swap.getOrElse("")
         assertTrue(
           res.isLeft,
-          msg.contains("arity"),
-          msg.contains("merge"),
+          msg.contains("(Int, Int) => String"),
+          msg.contains("Int => String"),
         )
     },
     test("handler param type incompatible — message names mismatched types") {
@@ -66,9 +65,8 @@ object ErrorMessageSpec extends ZIOSpecDefault:
         val msg = res.swap.getOrElse("")
         assertTrue(
           res.isLeft,
-          msg.contains("parameter"),
-          msg.contains("Int"),
-          msg.contains("String"),
+          msg.contains("Int => String"),
+          msg.contains("String => String"),
         )
     },
     test("handler return type incompatible — message names both") {
@@ -80,9 +78,8 @@ object ErrorMessageSpec extends ZIOSpecDefault:
         val msg = res.swap.getOrElse("")
         assertTrue(
           res.isLeft,
-          msg.contains("return"),
-          msg.contains("String"),
-          msg.contains("Int"),
+          msg.contains("Int => String"),
+          msg.contains("Int => Int"),
         )
     },
   )

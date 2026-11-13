@@ -5,7 +5,8 @@ import scala.quoted.*
 /** Compile-time machinery for slayer.
   *
   * This object grows in milestones (see plan): M1 is just the reflection helpers (`peelMethod`, `flatten`,
-  * `methodIdOf`) and a probe object that lets tests exercise them in isolation. M2+ adds `stubImpl` and `stubbedImpl`.
+  * `methodIdOf`) and a probe object that lets tests exercise them in isolation. `stubPartial` builds the handler
+  * builder. `stubbedImpl` synthesizes the service class.
   */
 private[slayer] object Macros:
 
@@ -215,30 +216,11 @@ private[slayer] object Macros:
     end match
   end erasedTypeName
 
-  // -------------------------------------------------------------------------------------------------------------------
-  // stubImpl — value-result branch (M2) and function-handler branch (M3)
-  // -------------------------------------------------------------------------------------------------------------------
-
-  /** Macro implementation for `slayer.stub`.
-    *
-    * Two branches:
-    *
-    *   - **Value branch**: if `result` typechecks as the method's final return type, emit `Stubbed.insertValue`.
-    *   - **Function branch (M3)**: if `result` is a chain of `FunctionN[..., R]` whose flattened parameter list matches
-    *     the method's flattened *non-implicit* value parameters and whose final return matches the method return, emit
-    *     an `Array[Any] => Any` adapter that captures the handler in a closure and applies it.
-    *
-    * Handler shape need not mirror method shape — a curried 2-list method can be stubbed with `(a, b) => r` (tupled) or
-    * `a => b => r` (curried). The unrolling reads from the *handler*'s function chain and pulls args off the array in
-    * declaration order.
-    *
-    * The selector lambda's *typed* tree carries any type-argument substitutions the user wrote (`_.get[String](...)`),
-    * so the return-type check is done against the lambda body's `.tpe`, not the un-substituted symbol's `termRef`.
+  /** Macro for `slayer.stub`. Returns a builder whose `apply` is typed as the method's value parameters and return. The
+    * selector's typed tree carries the user's type arguments (`_.get[String](...)`), so the builder sees those
+    * substituted types, not the un-substituted symbol.
     */
-  def stubImpl[Service: Type](
-      select: Expr[Service => Any],
-      result: Expr[Any],
-  )(using Quotes): Expr[zio.URIO[Stubbed[Service], Unit]] =
+  def stubPartial[Service: Type](select: Expr[Service => Any])(using Quotes): Expr[Any] =
     import quotes.reflect.*
 
     val tree = select.asTerm.underlyingArgument
@@ -248,99 +230,66 @@ private[slayer] object Macros:
           s"stub: selector must reference a method on ${TypeRepr.of[Service].show}, but got: ${select.show}"
         )
       case Some((sym, _)) =>
-        val expectedReturn = selectorReturnType(tree)
-        val resultTpe      = result.asTerm.tpe.widen
-
-        val tagExpr = Expr.summon[zio.Tag[Service]].getOrElse {
+        val params = selectorValueParamTypes(tree, sym)
+        val ret    = selectorReturnType(tree)
+        val tag    = Expr.summon[zio.Tag[Service]].getOrElse {
           report.errorAndAbort(
             s"stub: could not summon zio.Tag[${TypeRepr.of[Service].show}] required by Stubbed insertion"
           )
         }
-        val id = methodIdOf(sym)
-
-        if resultTpe <:< expectedReturn then
-          // Value branch — store as-is. We tag the stored value with the method's return type so the runtime cast in
-          // `Stubbed.callStubbed` succeeds.
-          expectedReturn.asType match
-            case '[r] =>
-              val typedV = '{ $result.asInstanceOf[r] }
-              '{ Stubbed.insertValue[Service, r]($id, $typedV)(using $tagExpr) }
-        else
-          // Function branch — try to interpret `result` as a Function* whose flat params match the method's flat
-          // non-implicit params.
-          peelFunctionParams(resultTpe) match
-            case Some((handlerParams, handlerReturn)) =>
-              val methodValueParams = selectorValueParamTypes(tree, sym)
-
-              if !(handlerReturn <:< expectedReturn) then
-                report.errorAndAbort(
-                  s"""stub: handler return type does not match method return type.
-                     |  method:   ${sym.name}
-                     |  expected: ${expectedReturn.show}
-                     |  got:      ${handlerReturn.show}""".stripMargin
-                )
-
-              if handlerParams.size != methodValueParams.size then
-                report.errorAndAbort(
-                  s"""stub: handler arity does not match method arity.
-                     |  method:   ${sym.name} expects ${methodValueParams.size} value parameter(s)
-                     |  handler:  ${handlerParams.size} parameter(s)""".stripMargin
-                )
-
-              handlerParams.zip(methodValueParams).zipWithIndex.foreach { case ((hp, mp), i) =>
-                if !(mp <:< hp) then
-                  report.errorAndAbort(
-                    s"""stub: handler parameter ${i} type does not accept method parameter type.
-                       |  method param:  ${mp.show}
-                       |  handler param: ${hp.show}""".stripMargin
-                  )
-              }
-
-              val adapter = buildAdapter(result, resultTpe)
-              '{ Stubbed.insertFunc[Service]($id, $adapter)(using $tagExpr) }
-
-            case None =>
-              report.errorAndAbort(
-                s"""stub: result type does not match method return type, and is not a function handler.
-                   |  method:   ${sym.name}
-                   |  expected: ${expectedReturn.show}
-                   |  got:      ${resultTpe.show}""".stripMargin
-              )
-          end match
-        end if
+        builderOf[Service](params, ret, methodIdOf(sym), tag)
     end match
-  end stubImpl
+  end stubPartial
 
-  /** Peel a chain of `Function1`/`Function2`/.../`FunctionN` types into a flat parameter list and the final return.
-    *
-    * Examples:
-    *
-    *   - `(A, B) => R` → `Some((List(A, B), R))`
-    *   - `A => B => R` → `Some((List(A, B), R))`
-    *   - `(A, B) => C => R` → `Some((List(A, B, C), R))`
-    *   - `Int` → `None`
-    *
-    * A `scala.FunctionN` `AppliedType` has `args = [a1, ..., an, r]`. We split off the last one as the return and
-    * recurse into it; any non-`FunctionN` type terminates the recursion.
-    */
-  private def peelFunctionParams(using
+  /** `Stub0`–`Stub22` for a tupled function. Longer than that, a curried [[StubHigh]]. */
+  private def builderOf[Service: Type](using
       Quotes
-  )(tpe: quotes.reflect.TypeRepr): Option[(List[quotes.reflect.TypeRepr], quotes.reflect.TypeRepr)] =
+  )(
+      params: List[quotes.reflect.TypeRepr],
+      ret: quotes.reflect.TypeRepr,
+      id: Expr[MethodId],
+      tag: Expr[zio.Tag[Service]],
+  ): Expr[Any] =
+    if params.sizeIs > 22 then highBuilder[Service](params, ret, id, tag)
+    else classBuilder[Service](params, ret, id, tag)
+  end builderOf
+
+  private def highBuilder[Service: Type](using
+      Quotes
+  )(
+      params: List[quotes.reflect.TypeRepr],
+      ret: quotes.reflect.TypeRepr,
+      id: Expr[MethodId],
+      tag: Expr[zio.Tag[Service]],
+  ): Expr[Any] =
     import quotes.reflect.*
+    val f1      = Symbol.requiredClass("scala.Function1").typeRef
+    val curried = params.foldRight(ret)((p, acc) => AppliedType(f1, List(p, acc)))
+    (curried.asType, ret.asType) match
+      case ('[f], '[r]) => '{ new StubHigh[Service, f, r]($id)(using $tag) }
+      case _            => report.errorAndAbort("stub: could not build the curried handler type")
+  end highBuilder
 
-    def loop(t: TypeRepr, acc: List[TypeRepr]): (List[TypeRepr], TypeRepr) =
-      t.dealias match
-        case AppliedType(tycon, args) if isFunctionTycon(tycon) && args.nonEmpty =>
-          val ps  = args.init
-          val ret = args.last
-          loop(ret, acc ++ ps)
-        case other => (acc, other)
-      end match
-    end loop
-
-    val (params, ret) = loop(tpe, Nil)
-    if params.isEmpty then None else Some((params, ret))
-  end peelFunctionParams
+  /** `new StubN[Service, P..., R](id)(using tag)` for arity 0 through 22. */
+  private def classBuilder[Service: Type](using
+      Quotes
+  )(
+      params: List[quotes.reflect.TypeRepr],
+      ret: quotes.reflect.TypeRepr,
+      id: Expr[MethodId],
+      tag: Expr[zio.Tag[Service]],
+  ): Expr[Any] =
+    import quotes.reflect.*
+    val sym                            = Symbol.requiredClass(s"slayer.Stub${params.size}")
+    val targs                          = TypeRepr.of[Service] :: (params :+ ret)
+    val applied                        = AppliedType(sym.typeRef, targs)
+    def treeOf(tr: TypeRepr): TypeTree =
+      tr.asType match
+        case '[t] => TypeTree.of[t]
+        case _    => report.errorAndAbort("stub: could not reify a builder type argument")
+    val ctor = Select(New(treeOf(applied)), sym.primaryConstructor)
+    Apply(Apply(TypeApply(ctor, targs.map(treeOf)), List(id.asTerm)), List(tag.asTerm)).asExpr
+  end classBuilder
 
   /** Recognise `scala.FunctionN` type constructors. Checks the type symbol's full name to avoid hard-coding arity. */
   private def isFunctionTycon(using Quotes)(tycon: quotes.reflect.TypeRepr): Boolean =
@@ -419,10 +368,21 @@ private[slayer] object Macros:
     * time based on the handler's *type chain* — `peelFunctionParams` already gave us the flat count; the closure that
     * captures `$result` keeps its original (curried or tupled) shape, and we apply it accordingly.
     *
-    * For up to arity 22 we can rely on `Function*.apply` being directly callable by spelling out the call as a tree;
-    * past that, the handler value cannot exist as a Scala 3 function literal anyway, so we only need to support the
-    * shapes the user can actually write.
+    * A tupled `FunctionN` stops at 22 because Scala does. A curried chain is nested `Function1` and has no such stop.
+    * `applyHandlerChain` walks whichever shape the handler has.
     */
+  /** Unroll a curried handler whose arity is above `Function22`. The handler's type is already the method's chain. */
+  def adaptCurried[S: Type, F: Type](id: Expr[MethodId], handler: Expr[F])(using
+      Quotes
+  ): Expr[zio.URIO[Stubbed[S], Unit]] =
+    val tag = Expr.summon[zio.Tag[S]].getOrElse {
+      import quotes.reflect.*
+      report.errorAndAbort(s"stub: could not summon zio.Tag[${TypeRepr.of[S].show}]")
+    }
+    val adapter = buildAdapter(handler.asExprOf[Any], quotes.reflect.TypeRepr.of[F])
+    '{ Stubbed.insertFunc[S]($id, $adapter)(using $tag) }
+  end adaptCurried
+
   private def buildAdapter(using
       Quotes
   )(
